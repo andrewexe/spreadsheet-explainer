@@ -65,7 +65,7 @@ function detectAnomalies(data) {
 }
 
 // ── D3 Dependency Graph ─────────────────────────────────────────────────────
-function DependencyGraph({ selected, allAnomalies, data }) {
+function DependencyGraph({ selected, allAnomalies }) {
     const svgRef = useRef();
 
     useEffect(() => {
@@ -155,15 +155,11 @@ function DependencyGraph({ selected, allAnomalies, data }) {
 export default function SpreadsheetExplainer() {
     const [data, setData] = useState(SAMPLE_DATA);
     const [anomalies, setAnomalies] = useState([]);
-    const [selected, setSelected] = useState(null);
+    const [selectedCell, setSelectedCell] = useState(null);
     const [editingCell, setEditingCell] = useState(null);
     const [editValue, setEditValue] = useState("");
     const [filter, setFilter] = useState("all");
     const [animatedRows, setAnimatedRows] = useState(new Set());
-
-    useEffect(() => {
-        setAnomalies(detectAnomalies(data));
-    }, [data]);
 
     const getAnomaly = useCallback((rowIdx, colKey) =>
         anomalies.find(a => a.row === rowIdx && a.col === colKey), [anomalies]);
@@ -171,9 +167,13 @@ export default function SpreadsheetExplainer() {
     const severityColor = { critical: "#e53e3e", warning: "#d69e2e", missing: "#718096", invalid: "#e53e3e" };
     const severityBg = { critical: "rgba(229,62,62,0.12)", warning: "rgba(214,158,46,0.12)", missing: "rgba(113,128,150,0.12)", invalid: "rgba(229,62,62,0.12)" };
 
-    const handleCellClick = (anomaly) => {
-        if (anomaly) setSelected(anomaly);
+    const handleCellClick = (row, col) => {
+        setSelectedCell({ row, col });
     };
+
+    const selected = selectedCell
+    ? anomalies.find(a => a.row === selectedCell.row && a.col === selectedCell.col)
+    : null;
 
     const startEdit = (rowIdx, colKey, val) => {
         setEditingCell(`${rowIdx}-${colKey}`);
@@ -190,8 +190,18 @@ export default function SpreadsheetExplainer() {
         setTimeout(() => setAnimatedRows(prev => { const s = new Set(prev); s.delete(rowIdx); return s; }), 600);
     };
 
-    const filteredAnomalies = filter === "all" ? anomalies : anomalies.filter(a => a.severity === filter);
+    // const filteredAnomalies = filter === "all" ? anomalies : anomalies.filter(a => a.severity === filter);
     const counts = { critical: anomalies.filter(a => a.severity === "critical").length, warning: anomalies.filter(a => a.severity === "warning").length, missing: anomalies.filter(a => a.severity === "missing").length, invalid: anomalies.filter(a => a.severity === "invalid").length };
+
+    useEffect(() => {
+        setAnomalies(detectAnomalies(data));
+    }, [data]);
+
+    useEffect(() => {
+        if (selectedCell && !selected) {
+            setSelectedCell(null);
+        }
+    }, [anomalies, selected, selectedCell]);
 
     return (
         <div style={{ background: "#0d1117", minHeight: "100vh", fontFamily: "'JetBrains Mono', monospace", color: "#c9d1d9", display: "flex", flexDirection: "column" }}>
@@ -241,7 +251,7 @@ export default function SpreadsheetExplainer() {
                                             const val = row[col.key];
 
                                             return (
-                                                <td key={col.key} onClick={() => handleCellClick(anomaly)}
+                                                <td key={col.key} onClick={() => handleCellClick(rowIdx, col.key)}
                                                     onDoubleClick={() => startEdit(rowIdx, col.key, val)}
                                                     style={{
                                                         padding: "0", position: "relative", cursor: anomaly ? "pointer" : "default",
@@ -322,7 +332,7 @@ export default function SpreadsheetExplainer() {
                             {/* Graph */}
                             <div style={{ margin: "10px 16px 0", background: "#0d1117", borderRadius: "8px", overflow: "hidden" }}>
                                 <div style={{ padding: "8px 12px", fontSize: "10px", color: "#4a5568", borderBottom: "1px solid #21262d", textTransform: "uppercase", letterSpacing: "0.5px" }}>Dependency Graph</div>
-                                <DependencyGraph selected={selected} allAnomalies={anomalies} data={data} />
+                                <DependencyGraph selected={selected} allAnomalies={anomalies} />
                             </div>
 
                             {/* Fix suggestion */}
@@ -340,7 +350,7 @@ export default function SpreadsheetExplainer() {
                             <div style={{ padding: "16px", borderTop: "1px solid #21262d" }}>
                                 <div style={{ fontSize: "11px", color: "#4a5568", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>All Issues</div>
                                 {anomalies.slice(0, 6).map((a, i) => (
-                                    <div key={i} onClick={() => setSelected(a)} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", borderRadius: "6px", cursor: "pointer", marginBottom: "4px", background: "#0d1117", border: "1px solid #21262d", transition: "border-color 0.15s" }}
+                                    <div key={i} onClick={() => setSelectedCell({ row: a.row, col: a.col })} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", borderRadius: "6px", cursor: "pointer", marginBottom: "4px", background: "#0d1117", border: "1px solid #21262d", transition: "border-color 0.15s" }}
                                          onMouseEnter={e => e.currentTarget.style.borderColor = severityColor[a.severity] + "66"}
                                          onMouseLeave={e => e.currentTarget.style.borderColor = "#21262d"}>
                                         <span style={{ color: severityColor[a.severity], fontSize: "8px" }}>●</span>
