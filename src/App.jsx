@@ -190,8 +190,18 @@ export default function SpreadsheetExplainer() {
         setTimeout(() => setAnimatedRows(prev => { const s = new Set(prev); s.delete(rowIdx); return s; }), 600);
     };
 
-    // const filteredAnomalies = filter === "all" ? anomalies : anomalies.filter(a => a.severity === filter);
-    const counts = { critical: anomalies.filter(a => a.severity === "critical").length, warning: anomalies.filter(a => a.severity === "warning").length, missing: anomalies.filter(a => a.severity === "missing").length, invalid: anomalies.filter(a => a.severity === "invalid").length };
+    const counts = { 
+        critical: anomalies.filter(a => a.severity === "critical").length,
+        warning: anomalies.filter(a => a.severity === "warning").length,
+        missing: anomalies.filter(a => a.severity === "missing").length,
+        invalid: anomalies.filter(a => a.severity === "invalid").length 
+    };
+
+    const filteredAnomalies = 
+        filter === "all" 
+        ? anomalies 
+        : anomalies.filter(a => a.severity === filter);
+
 
     useEffect(() => {
         setAnomalies(detectAnomalies(data));
@@ -348,8 +358,8 @@ export default function SpreadsheetExplainer() {
                                 <DependencyGraph selected={null} allAnomalies={anomalies} data={data} />
                             </div>
                             <div style={{ padding: "16px", borderTop: "1px solid #21262d" }}>
-                                <div style={{ fontSize: "11px", color: "#4a5568", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>All Issues</div>
-                                {anomalies.slice(0, 6).map((a, i) => (
+                                <div style={{ fontSize: "11px", color: "#4a5568", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>{filter === "all" ? "All Issues" : `${filter} Issues`}</div>
+                                {filteredAnomalies.slice(0, 6).map((a, i) => (
                                     <div key={i} onClick={() => setSelectedCell({ row: a.row, col: a.col })} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 8px", borderRadius: "6px", cursor: "pointer", marginBottom: "4px", background: "#0d1117", border: "1px solid #21262d", transition: "border-color 0.15s" }}
                                          onMouseEnter={e => e.currentTarget.style.borderColor = severityColor[a.severity] + "66"}
                                          onMouseLeave={e => e.currentTarget.style.borderColor = "#21262d"}>
@@ -359,7 +369,7 @@ export default function SpreadsheetExplainer() {
                                         <span style={{ color: "#c9d1d9", fontSize: "11px", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.reason}</span>
                                     </div>
                                 ))}
-                                {anomalies.length > 6 && <div style={{ fontSize: "11px", color: "#4a5568", textAlign: "center", paddingTop: "6px" }}>+{anomalies.length - 6} more — click any flagged cell</div>}
+                                {filteredAnomalies.length > 6 && <div style={{ fontSize: "11px", color: "#4a5568", textAlign: "center", paddingTop: "6px" }}>+{filteredAnomalies.length - 6} more — click any flagged cell</div>}
                             </div>
                         </div>
                     )}
