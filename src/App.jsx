@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as d3 from "d3";
+import * as XLSX from "xlsx";
 
 // ── Sample dataset with seeded errors ──────────────────────────────────────
 const SAMPLE_DATA = [
@@ -20,7 +21,7 @@ const SAMPLE_DATA = [
     { id: 15, name: "Noah Clark",   dept: "HR",          salary: 69000,  hours: 38, performance: 3.3 },
 ];
 
-const COLUMNS = [
+const DEFAULT_COLUMNS = [
     { key: "id",          label: "ID",          type: "number" },
     { key: "name",        label: "Name",        type: "string" },
     { key: "dept",        label: "Department",  type: "string" },
@@ -29,15 +30,105 @@ const COLUMNS = [
     { key: "performance", label: "Perf Score",  type: "number" },
 ];
 
+const MAX_ROWS = 5000;
+
+function toKey(label, idx, used) {
+    const base = String(label ?? `column_${idx + 1}`)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || `column_${idx + 1}`;
+    let key = base;
+    let n = 2;
+    while (used.has(key)) {
+        key = `${base}_${n}`;
+        n += 1;
+    }
+    used.add(key);
+    return key;
+}
+
+function parseNumeric(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value !== "string") return null;
+    const cleaned = value.replace(/[$,%\s,]/g, "");
+    if (cleaned === "") return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+}
+
+function inferColumnsAndData(rows) {
+    const headers = Array.from(
+        rows.reduce((set, row) => {
+            Object.keys(row || {}).forEach(k => set.add(String(k)));
+            return set;
+        }, new Set()),
+    );
+
+    const used = new Set();
+    const mapped = headers.map((header, idx) => ({ header, key: toKey(header, idx, used) }));
+
+    const numericByHeader = Object.fromEntries(
+        headers.map((header) => {
+            let numericCount = 0;
+            let totalCount = 0;
+            rows.forEach((row) => {
+                const raw = row?.[header];
+                if (raw === null || raw === undefined || String(raw).trim() === "") return;
+                totalCount += 1;
+                if (parseNumeric(raw) !== null) numericCount += 1;
+            });
+            return [header, totalCount > 0 && numericCount / totalCount >= 0.7];
+        }),
+    );
+
+    const columns = mapped.map(({ header, key }) => ({
+        key,
+        label: header,
+        type: numericByHeader[header] ? "number" : "string",
+    }));
+
+    const data = rows.slice(0, MAX_ROWS).map((row) => {
+        const normalized = {};
+        mapped.forEach(({ header, key }) => {
+            const raw = row?.[header];
+            if (raw === null || raw === undefined || String(raw).trim() === "") {
+                normalized[key] = null;
+                return;
+            }
+            if (numericByHeader[header]) {
+                normalized[key] = parseNumeric(raw);
+                return;
+            }
+            normalized[key] = String(raw).trim();
+        });
+        return normalized;
+    });
+
+    return { columns, data };
+}
+
+function toSourcePreview(rows, columns) {
+    const headers = columns.map(c => c.label);
+    const sourceRows = rows.map((row) => {
+        const sourceRow = {};
+        columns.forEach((col) => {
+            sourceRow[col.label] = row[col.key] ?? null;
+        });
+        return sourceRow;
+    });
+    return { headers, sourceRows };
+}
+
 // ── Anomaly detection engine ────────────────────────────────────────────────
-function detectAnomalies(data) {
+function detectAnomalies(data, columns) {
     const anomalies = [];
-    const numericCols = COLUMNS.filter(c => c.type === "number").map(c => c.key);
+    const numericCols = columns.filter(c => c.type === "number").map(c => c.key);
 
     numericCols.forEach(col => {
         const vals = data.map(r => r[col]).filter(v => v !== null && v !== undefined && !isNaN(v));
-        const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-        const std = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+        const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+        const std = vals.length > 1 ? Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length) : 0;
 
         data.forEach((row, i) => {
             const val = row[col];
@@ -46,8 +137,8 @@ function detectAnomalies(data) {
             } else if (val < 0 && col !== "id") {
                 anomalies.push({ row: i, col, severity: "invalid", reason: `Negative value (${val}) — logically impossible`, value: val, mean, std });
             } else {
-                const z = Math.abs((val - mean) / std);
-                if (z > 2.8) {
+                const z = std > 0 ? Math.abs((val - mean) / std) : 0;
+                if (Number.isFinite(z) && z > 2.8) {
                     anomalies.push({ row: i, col, severity: z > 4 ? "critical" : "warning", reason: `Statistical outlier: ${val.toLocaleString()} is ${z.toFixed(1)}σ from mean (${mean.toFixed(1)})`, value: val, mean, std, zScore: z });
                 }
             }
@@ -55,17 +146,21 @@ function detectAnomalies(data) {
     });
 
     // String checks
+    const stringCols = columns.filter(c => c.type === "string").map(c => c.key);
     data.forEach((row, i) => {
-        if (!row.name || row.name.trim() === "") {
-            anomalies.push({ row: i, col: "name", severity: "missing", reason: "Missing employee name", value: row.name });
-        }
+        stringCols.forEach((col) => {
+            const value = row[col];
+            if (value === null || value === undefined || String(value).trim() === "") {
+                anomalies.push({ row: i, col, severity: "missing", reason: `Missing value in ${col}`, value });
+            }
+        });
     });
 
     return anomalies;
 }
 
 // ── D3 Dependency Graph ─────────────────────────────────────────────────────
-function DependencyGraph({ selected, allAnomalies, data }) {
+function DependencyGraph({ selected, allAnomalies }) {
     const svgRef = useRef();
 
     useEffect(() => {
@@ -151,19 +246,66 @@ function DependencyGraph({ selected, allAnomalies, data }) {
     return <svg ref={svgRef} width="320" height="280" style={{ display: "block" }} />;
 }
 
+function SourcePreview({ headers, rows, selectedRow }) {
+    if (!headers.length || !rows.length) {
+        return <div style={{ fontSize: "11px", color: "#4a5568", padding: "12px 0" }}>No source rows loaded yet.</div>;
+    }
+
+    const start = selectedRow === null ? 0 : Math.max(0, selectedRow - 2);
+    const visibleRows = rows.slice(start, start + 8);
+
+    return (
+        <div style={{ background: "#0d1117", borderRadius: "8px", border: "1px solid #21262d", overflow: "auto", maxHeight: "230px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "10px" }}>
+                <thead>
+                <tr style={{ background: "#11161d" }}>
+                    <th style={{ padding: "6px 8px", color: "#6e7681", fontWeight: "600", borderBottom: "1px solid #21262d", textAlign: "left" }}>#</th>
+                    {headers.map((header) => (
+                        <th key={header} style={{ padding: "6px 8px", color: "#6e7681", fontWeight: "600", borderBottom: "1px solid #21262d", textAlign: "left", whiteSpace: "nowrap" }}>
+                            {header}
+                        </th>
+                    ))}
+                </tr>
+                </thead>
+                <tbody>
+                {visibleRows.map((row, idx) => {
+                    const originalRowIdx = start + idx;
+                    const isSelected = selectedRow === originalRowIdx;
+                    return (
+                        <tr key={originalRowIdx} style={{ background: isSelected ? "rgba(229,62,62,0.12)" : "transparent" }}>
+                            <td style={{ padding: "6px 8px", color: "#8b949e", borderBottom: "1px solid #21262d", whiteSpace: "nowrap" }}>{originalRowIdx + 1}</td>
+                            {headers.map((header) => (
+                                <td key={`${originalRowIdx}-${header}`} style={{ padding: "6px 8px", color: isSelected ? "#f0f6fc" : "#c9d1d9", borderBottom: "1px solid #21262d", whiteSpace: "nowrap" }}>
+                                    {row[header] === null || row[header] === undefined || row[header] === "" ? "—" : String(row[header])}
+                                </td>
+                            ))}
+                        </tr>
+                    );
+                })}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
 // ── Main App ────────────────────────────────────────────────────────────────
 export default function SpreadsheetExplainer() {
     const [data, setData] = useState(SAMPLE_DATA);
+    const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+    const [sourceHeaders, setSourceHeaders] = useState(DEFAULT_COLUMNS.map(c => c.label));
+    const [sourceRows, setSourceRows] = useState(() => toSourcePreview(SAMPLE_DATA, DEFAULT_COLUMNS).sourceRows);
     const [anomalies, setAnomalies] = useState([]);
     const [selected, setSelected] = useState(null);
     const [editingCell, setEditingCell] = useState(null);
     const [editValue, setEditValue] = useState("");
     const [filter, setFilter] = useState("all");
     const [animatedRows, setAnimatedRows] = useState(new Set());
+    const [uploadMessage, setUploadMessage] = useState("");
+    const fileInputRef = useRef(null);
 
     useEffect(() => {
-        setAnomalies(detectAnomalies(data));
-    }, [data]);
+        setAnomalies(detectAnomalies(data, columns));
+    }, [data, columns]);
 
     const getAnomaly = useCallback((rowIdx, colKey) =>
         anomalies.find(a => a.row === rowIdx && a.col === colKey), [anomalies]);
@@ -181,7 +323,7 @@ export default function SpreadsheetExplainer() {
     };
 
     const commitEdit = (rowIdx, colKey) => {
-        const col = COLUMNS.find(c => c.key === colKey);
+        const col = columns.find(c => c.key === colKey);
         const parsed = col.type === "number" ? (editValue === "" ? null : parseFloat(editValue)) : editValue;
         const newData = data.map((row, i) => i === rowIdx ? { ...row, [colKey]: parsed } : row);
         setData(newData);
@@ -190,7 +332,64 @@ export default function SpreadsheetExplainer() {
         setTimeout(() => setAnimatedRows(prev => { const s = new Set(prev); s.delete(rowIdx); return s; }), 600);
     };
 
-    const filteredAnomalies = filter === "all" ? anomalies : anomalies.filter(a => a.severity === filter);
+    const handleFileUpload = async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+            const buffer = await file.arrayBuffer();
+            const workbook = XLSX.read(buffer, { type: "array" });
+            const sheetName = workbook.SheetNames[0];
+            const sheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+            if (!rows.length) {
+                setUploadMessage("No data rows found. Make sure the first row has column headers.");
+                return;
+            }
+            const normalized = inferColumnsAndData(rows);
+            if (!normalized.columns.length) {
+                setUploadMessage("Could not infer columns from this file.");
+                return;
+            }
+            const rawHeaders = Array.from(
+                rows.reduce((set, row) => {
+                    Object.keys(row || {}).forEach(k => set.add(String(k)));
+                    return set;
+                }, new Set()),
+            );
+            const rawRows = rows.slice(0, MAX_ROWS).map((row) => {
+                const nextRow = {};
+                rawHeaders.forEach((header) => {
+                    nextRow[header] = row?.[header] ?? null;
+                });
+                return nextRow;
+            });
+            setColumns(normalized.columns);
+            setData(normalized.data);
+            setSourceHeaders(rawHeaders);
+            setSourceRows(rawRows);
+            setSelected(null);
+            setFilter("all");
+            setEditingCell(null);
+            setUploadMessage(`Loaded ${file.name} (${normalized.data.length} rows${rows.length > MAX_ROWS ? `, capped at ${MAX_ROWS}` : ""}).`);
+        } catch {
+            setUploadMessage("Could not parse file. Upload a valid CSV or Excel file.");
+        } finally {
+            event.target.value = "";
+        }
+    };
+
+    const resetSample = () => {
+        const source = toSourcePreview(SAMPLE_DATA, DEFAULT_COLUMNS);
+        setColumns(DEFAULT_COLUMNS);
+        setData(SAMPLE_DATA);
+        setSourceHeaders(source.headers);
+        setSourceRows(source.sourceRows);
+        setSelected(null);
+        setFilter("all");
+        setEditingCell(null);
+        setUploadMessage("Loaded sample dataset.");
+    };
+
     const counts = { critical: anomalies.filter(a => a.severity === "critical").length, warning: anomalies.filter(a => a.severity === "warning").length, missing: anomalies.filter(a => a.severity === "missing").length, invalid: anomalies.filter(a => a.severity === "invalid").length };
 
     return (
@@ -202,6 +401,25 @@ export default function SpreadsheetExplainer() {
                     <span style={{ fontSize: "15px", fontWeight: "700", color: "#f0f6fc", letterSpacing: "-0.3px" }}>SheetScan</span>
                     <span style={{ fontSize: "11px", color: "#4a5568", background: "#21262d", padding: "2px 8px", borderRadius: "10px" }}>Explainable Error Detection</span>
                 </div>
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handleFileUpload}
+                    style={{ display: "none" }}
+                />
+                <button
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{ background: "#238636", border: "1px solid #2ea043", color: "#f0f6fc", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: "pointer" }}
+                >
+                    Upload CSV/Excel
+                </button>
+                <button
+                    onClick={resetSample}
+                    style={{ background: "#21262d", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: "pointer" }}
+                >
+                    Load Sample
+                </button>
                 <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
                     {[["critical", "#e53e3e"], ["warning", "#d69e2e"], ["missing", "#718096"], ["invalid", "#fc8181"]].map(([sev, col]) => (
                         counts[sev] > 0 && (
@@ -221,7 +439,7 @@ export default function SpreadsheetExplainer() {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                             <thead>
                             <tr style={{ background: "#0d1117" }}>
-                                {COLUMNS.map(col => (
+                                {columns.map(col => (
                                     <th key={col.key} style={{ padding: "10px 14px", textAlign: "left", color: "#8b949e", fontWeight: "600", fontSize: "11px", letterSpacing: "0.5px", textTransform: "uppercase", borderBottom: "1px solid #21262d", whiteSpace: "nowrap" }}>
                                         {col.label}
                                     </th>
@@ -234,7 +452,7 @@ export default function SpreadsheetExplainer() {
                                 const isAnimating = animatedRows.has(rowIdx);
                                 return (
                                     <tr key={rowIdx} style={{ borderBottom: "1px solid #21262d", background: isAnimating ? "rgba(56,161,105,0.08)" : rowHasAnomaly ? "rgba(229,62,62,0.03)" : "transparent", transition: "background 0.4s" }}>
-                                        {COLUMNS.map(col => {
+                                        {columns.map(col => {
                                             const anomaly = getAnomaly(rowIdx, col.key);
                                             const isSelected = selected?.row === rowIdx && selected?.col === col.key;
                                             const isEditing = editingCell === `${rowIdx}-${col.key}`;
@@ -278,6 +496,11 @@ export default function SpreadsheetExplainer() {
                     <div style={{ marginTop: "8px", color: "#4a5568", fontSize: "11px" }}>
                         💡 Click flagged cells to inspect · Double-click to edit · {anomalies.length} issues detected across {data.length} rows
                     </div>
+                    {uploadMessage && (
+                        <div style={{ marginTop: "6px", color: "#8b949e", fontSize: "11px" }}>
+                            {uploadMessage}
+                        </div>
+                    )}
                 </div>
 
                 {/* Explanation Panel */}
@@ -322,7 +545,7 @@ export default function SpreadsheetExplainer() {
                             {/* Graph */}
                             <div style={{ margin: "10px 16px 0", background: "#0d1117", borderRadius: "8px", overflow: "hidden" }}>
                                 <div style={{ padding: "8px 12px", fontSize: "10px", color: "#4a5568", borderBottom: "1px solid #21262d", textTransform: "uppercase", letterSpacing: "0.5px" }}>Dependency Graph</div>
-                                <DependencyGraph selected={selected} allAnomalies={anomalies} data={data} />
+                                <DependencyGraph selected={selected} allAnomalies={anomalies} />
                             </div>
 
                             {/* Fix suggestion */}
@@ -335,7 +558,7 @@ export default function SpreadsheetExplainer() {
                     ) : (
                         <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
                             <div style={{ flex: 1 }}>
-                                <DependencyGraph selected={null} allAnomalies={anomalies} data={data} />
+                                <DependencyGraph selected={null} allAnomalies={anomalies} />
                             </div>
                             <div style={{ padding: "16px", borderTop: "1px solid #21262d" }}>
                                 <div style={{ fontSize: "11px", color: "#4a5568", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>All Issues</div>
@@ -353,6 +576,12 @@ export default function SpreadsheetExplainer() {
                             </div>
                         </div>
                     )}
+                    <div style={{ marginTop: "auto", borderTop: "1px solid #21262d", padding: "12px 16px 14px" }}>
+                        <div style={{ fontSize: "10px", color: "#8b949e", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                            Source File Preview
+                        </div>
+                        <SourcePreview headers={sourceHeaders} rows={sourceRows} selectedRow={selected?.row ?? null} />
+                    </div>
                 </div>
             </div>
 
