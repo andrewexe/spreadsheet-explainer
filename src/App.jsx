@@ -120,6 +120,25 @@ function toSourcePreview(rows, columns) {
     return { headers, sourceRows };
 }
 
+/** Build sheet from current grid state (labels as headers, same column order as the UI). */
+function downloadEditedFile(data, columns, bookType = "xlsx") {
+    const headerRow = columns.map((c) => c.label);
+    const body = data.map((row) =>
+        columns.map((c) => {
+            const v = row[c.key];
+            if (v === null || v === undefined || v === "") return "";
+            return v;
+        }),
+    );
+    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...body]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+    const stamp = new Date().toISOString().slice(0, 10);
+    const ext = bookType === "csv" ? "csv" : "xlsx";
+    const filename = `sheetscan-edited-${stamp}.${ext}`;
+    XLSX.writeFile(wb, filename, bookType === "csv" ? { bookType: "csv" } : {});
+}
+
 // ── Anomaly detection engine ────────────────────────────────────────────────
 function detectAnomalies(data, columns) {
     const anomalies = [];
@@ -302,6 +321,7 @@ export default function SpreadsheetExplainer() {
     const [animatedRows, setAnimatedRows] = useState(new Set());
     const [uploadMessage, setUploadMessage] = useState("");
     const fileInputRef = useRef(null);
+    const exportFormatRef = useRef(null);
 
     useEffect(() => {
         setAnomalies(detectAnomalies(data, columns));
@@ -419,6 +439,26 @@ export default function SpreadsheetExplainer() {
                     style={{ background: "#21262d", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: "pointer" }}
                 >
                     Load Sample
+                </button>
+                <select
+                    ref={exportFormatRef}
+                    defaultValue="xlsx"
+                    aria-label="Export file format"
+                    style={{ background: "#21262d", border: "1px solid #30363d", color: "#c9d1d9", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", cursor: "pointer", fontFamily: "inherit" }}
+                >
+                    <option value="xlsx">Excel (.xlsx)</option>
+                    <option value="csv">CSV (.csv)</option>
+                </select>
+                <button
+                    type="button"
+                    title="Exports the current grid with your cell edits"
+                    onClick={() => {
+                        const fmt = exportFormatRef.current?.value === "csv" ? "csv" : "xlsx";
+                        downloadEditedFile(data, columns, fmt);
+                    }}
+                    style={{ background: "#1f6feb", border: "1px solid #388bfd", color: "#f0f6fc", borderRadius: "6px", padding: "6px 10px", fontSize: "11px", cursor: "pointer" }}
+                >
+                    Download newly edited file
                 </button>
                 <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
                     {[["critical", "#e53e3e"], ["warning", "#d69e2e"], ["missing", "#718096"], ["invalid", "#fc8181"]].map(([sev, col]) => (
